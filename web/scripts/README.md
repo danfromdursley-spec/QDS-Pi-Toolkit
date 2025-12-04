@@ -31,3 +31,7 @@ Clone the repo:
 ```bash
 git clone https://github.com/danfromdursley-spec/QDS-Pi-Toolkit.git
 cd QDS-Pi-Toolkit/web
+
+bash run_qds_web.sh
+
+http://127.0.0.1:8000/qds_sandbox.html
