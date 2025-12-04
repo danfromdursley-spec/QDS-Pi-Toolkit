@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>QDS Sandbox – Babylon.js</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #05060a;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #f5f5f5;
+    }
+    #renderCanvas {
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      display: block;
+    }
+    .hud {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(5, 6, 10, 0.78);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      min-width: 260px;
+      z-index: 10;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .hud h1 {
+      font-size: 16px;
+      margin: 0 0 8px 0;
+      letter-spacing: 0.03em;
+    }
+    .hud p {
+      font-size: 12px;
+      margin: 0 0 10px 0;
+      opacity: 0.85;
+    }
+    .slider-group {
+      margin-bottom: 10px;
+    }
+    .slider-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .slider-label span.value {
+      opacity: 0.85;
+    }
+    input[type="range"] {
+      width: 100%;
+    }
+    .footer-note {
+      font-size: 11px;
+      opacity: 0.75;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+
+  <div class="hud">
+    <h1>QDS Sandbox 🎩</h1>
+    <p>
+      Adjust the <b>stochastic kernel</b> controlling this “vacuum field”.
+      Higher <b>λ<sub>c</sub></b> → smoother/clumpier space. Higher <b>τ<sub>c</sub></b> → slower time-variation.
+    </p>
+
+    <div class="slider-group">
+      <div class="slider-label">
+        <span>Spatial correlation λ<sub>c</sub></span>
+        <span class="value" id="lambdaValue">0.50</span>
+      </div>
+      <input type="range" id="lambdaSlider" min="0" max="1" step="0.01" value="0.5" />
+    </div>
+
+    <div class="slider-group">
+      <div class="slider-label">
+        <span>Temporal correlation τ<sub>c</sub></span>
+        <span class="value" id="tauValue">0.85</span>
+      </div>
+      <input type="range" id="tauSlider" min="0" max="0.99" step="0.01" value="0.85" />
+    </div>
+
+    <div class="slider-group">
+      <div class="slider-label">
+        <span>Field amplitude</span>
+        <span class="value" id="ampValue">1.0</span>
+      </div>
+      <input type="range" id="ampSlider" min="0.2" max="2" step="0.1" value="1.0" />
+    </div>
+
+    <p class="footer-note">
+      Drag to orbit • Scroll to zoom • QDS kernel driving the field in real-time
+    </p>
+  </div>
+
+  <!-- Babylon.js CDN -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script>
+    // Grab canvas
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true, {
+      preserveDrawingBuffer: true,
+      stencil: true,
+      disableWebGL2Support: false
+    });
+
+    // === QDS-like stochastic field parameters ===
+    const gridSize = 30;        // 30 x 30 particles
+    const spacing = 0.7;        // distance between particles
+    const baseAmplitude = 0.8;  // scaled by slider
+
+    let lambdaSlider, tauSlider, ampSlider;
+    let lambdaValueSpan, tauValueSpan, ampValueSpan;
+
+    // Fields
+    let randomField = [];
+    let smoothedField = [];
+    let spheres = [];
+
+    function initFields() {
+      randomField = [];
+      smoothedField = [];
+      for (let i = 0; i < gridSize; i++) {
+        randomField[i] = [];
+        smoothedField[i] = [];
+        for (let j = 0; j < gridSize; j++) {
+          randomField[i][j] = 2 * Math.random() - 1; // [-1, 1]
+          smoothedField[i][j] = 0;
+        }
+      }
+    }
+
+    function createScene() {
+      const scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.06, 1.0);
+
+      // Camera
+      const camera = new BABYLON.ArcRotateCamera(
+        "camera",
+        Math.PI / 4,
+        Math.PI / 3,
+        25,
+        new BABYLON.Vector3(0, 0, 0),
+        scene
+      );
+      camera.attachControl(canvas, true);
+      camera.lowerRadiusLimit = 10;
+      camera.upperRadiusLimit = 60;
+      camera.wheelDeltaPercentage = 0.01;
+
+      // Lights
+      const hemiLight = new BABYLON.HemisphericLight(
+        "hemiLight",
+        new BABYLON.Vector3(0, 1, 0),
+        scene
+      );
+      hemiLight.intensity = 0.75;
+
+      const dirLight = new BABYLON.DirectionalLight(
+        "dirLight",
+        new BABYLON.Vector3(-0.5, -1, -0.3),
+        scene
+      );
+      dirLight.intensity = 0.8;
+
+      // Glow / post-processing subtle highlight
+      const glow = new BABYLON.GlowLayer("glow", scene);
+      glow.intensity = 0.5;
+
+      // Ground grid for reference
+      const ground = BABYLON.MeshBuilder.CreateGround(
+        "ground",
+        { width: gridSize * spacing * 1.2, height: gridSize * spacing * 1.2, subdivisions: 1 },
+        scene
+      );
+      const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+      groundMat.diffuseColor = new BABYLON.Color3(0.04, 0.06, 0.1);
+      groundMat.specularColor = new BABYLON.Color3(0, 0, 0);
+      groundMat.emissiveColor = new BABYLON.Color3(0.03, 0.05, 0.1);
+      groundMat.alpha = 0.9;
+      ground.material = groundMat;
+
+      // Create particle-like spheres to visualize the field
+      const baseSphere = BABYLON.MeshBuilder.CreateSphere(
+        "baseSphere",
+        { diameter: 0.3, segments: 8 },
+        scene
+      );
+      const sphereMat = new BABYLON.StandardMaterial("sphereMat", scene);
+      sphereMat.diffuseColor = new BABYLON.Color3(0.2, 0.6, 1.0);
+      sphereMat.emissiveColor = new BABYLON.Color3(0.1, 0.4, 0.9);
+      sphereMat.specularColor = new BABYLON.Color3(0.4, 0.8, 1.0);
+      baseSphere.material = sphereMat;
+
+      const offset = (gridSize - 1) * spacing * 0.5;
+      spheres = [];
+      for (let i = 0; i < gridSize; i++) {
+        spheres[i] = [];
+        for (let j = 0; j < gridSize; j++) {
+          const s = baseSphere.clone("s_" + i + "_" + j);
+          const x = i * spacing - offset;
+          const z = j * spacing - offset;
+          s.position.set(x, 0, z);
+          spheres[i][j] = s;
+          glow.addIncludedOnlyMesh(s);
+        }
+      }
+      baseSphere.setEnabled(false); // only use clones
+
+      // A little "probe" above the field
+      const probe = BABYLON.MeshBuilder.CreateSphere(
+        "probe",
+        { diameter: 0.6, segments: 12 },
+        scene
+      );
+      const probeMat = new BABYLON.StandardMaterial("probeMat", scene);
+      probeMat.emissiveColor = new BABYLON.Color3(1.0, 0.8, 0.2);
+      probeMat.diffuseColor = new BABYLON.Color3(0.8, 0.6, 0.1);
+      probe.material = probeMat;
+      probe.position = new BABYLON.Vector3(0, 2.5, 0);
+      glow.addIncludedOnlyMesh(probe);
+
+      // Simple animation for probe
+      scene.onBeforeRenderObservable.add(() => {
+        const t = performance.now() * 0.001;
+        probe.position.y = 2.5 + 0.3 * Math.sin(t * 1.5);
+        probe.position.x = 1.5 * Math.cos(t * 0.7);
+        probe.position.z = 1.5 * Math.sin(t * 0.7);
+      });
+
+      // Initialize fields
+      initFields();
+
+      // === QDS-like kernel update ===
+      scene.onBeforeRenderObservable.add(() => {
+        const dt = engine.getDeltaTime() * 0.001; // seconds (not strictly needed here)
+
+        const lambdaSliderVal = parseFloat(lambdaSlider.value); // 0..1
+        const tauSliderVal = parseFloat(tauSlider.value);       // 0..0.99
+        const ampVal = parseFloat(ampSlider.value);
+
+        // 1) temporal update: random field with exponential memory (τ_c)
+        //    higher tauSliderVal => slower change
+        for (let i = 0; i < gridSize; i++) {
+          for (let j = 0; j < gridSize; j++) {
+            const oldVal = randomField[i][j];
+            const newNoise = 2 * Math.random() - 1;
+            randomField[i][j] = tauSliderVal * oldVal + (1 - tauSliderVal) * newNoise;
+          }
+        }
+
+        // 2) spatial smoothing: λ_c controls neighborhood radius
+        //    map lambdaSliderVal (0..1) → radius 0..4 (integer)
+        const maxRadius = 4;
+        const radius = Math.floor(lambdaSliderVal * maxRadius);
+
+        for (let i = 0; i < gridSize; i++) {
+          for (let j = 0; j < gridSize; j++) {
+            if (radius <= 0) {
+              smoothedField[i][j] = randomField[i][j];
+              continue;
+            }
+
+            let sum = 0;
+            let count = 0;
+            for (let di = -radius; di <= radius; di++) {
+              for (let dj = -radius; dj <= radius; dj++) {
+                const ni = i + di;
+                const nj = j + dj;
+                if (ni < 0 || nj < 0 || ni >= gridSize || nj >= gridSize) continue;
+                // Simple Gaussian-like weighting by distance
+                const dist2 = di * di + dj * dj;
+                const w = Math.exp(-dist2 / (2 * radius * radius || 1)); // avoid /0
+                sum += w * randomField[ni][nj];
+                count += w;
+              }
+            }
+            smoothedField[i][j] = sum / (count || 1);
+          }
+        }
+
+        // 3) write field → sphere positions
+        for (let i = 0; i < gridSize; i++) {
+          for (let j = 0; j < gridSize; j++) {
+            const s = spheres[i][j];
+            const value = smoothedField[i][j];
+            s.position.y = value * baseAmplitude * ampVal;
+          }
+        }
+      });
+
+      return scene;
+    }
+
+    // Hook sliders
+    function initUI() {
+      lambdaSlider = document.getElementById("lambdaSlider");
+      tauSlider = document.getElementById("tauSlider");
+      ampSlider = document.getElementById("ampSlider");
+
+      lambdaValueSpan = document.getElementById("lambdaValue");
+      tauValueSpan = document.getElementById("tauValue");
+      ampValueSpan = document.getElementById("ampValue");
+
+      const updateLabels = () => {
+        lambdaValueSpan.textContent = parseFloat(lambdaSlider.value).toFixed(2);
+        tauValueSpan.textContent = parseFloat(tauSlider.value).toFixed(2);
+        ampValueSpan.textContent = parseFloat(ampSlider.value).toFixed(1);
+      };
+
+      lambdaSlider.addEventListener("input", updateLabels);
+      tauSlider.addEventListener("input", updateLabels);
+      ampSlider.addEventListener("input", updateLabels);
+
+      updateLabels();
+    }
+
+    window.addEventListener("DOMContentLoaded", function () {
+      initUI();
+      const scene = createScene();
+
+      engine.runRenderLoop(function () {
+        if (scene.activeCamera) {
+          scene.render();
+        }
+      });
+
+      window.addEventListener("resize", function () {
+        engine.resize();
+      });
+    });
+  </script>
+</body>
+</html>
