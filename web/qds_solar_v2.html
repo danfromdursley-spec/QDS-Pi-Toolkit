@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>QDS Solar System v2 – Kepler + Kernel</title>
+
+  <!-- Babylon.js CDN -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #05060a;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        sans-serif;
+      color: #f5f5f5;
+    }
+
+    #renderCanvas {
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      display: block;
+    }
+
+    #ui-panel {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      padding: 10px 12px;
+      background: rgba(5, 8, 20, 0.92);
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+      max-width: 320px;
+      z-index: 10;
+      font-size: 11px;
+    }
+
+    #ui-panel h1 {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    #ui-panel h1 span.tophat {
+      font-size: 14px;
+    }
+
+    .slider-row {
+      margin: 4px 0 6px 0;
+    }
+
+    .slider-row label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2px;
+    }
+
+    .slider-row input[type="range"] {
+      width: 100%;
+    }
+
+    .small-note {
+      opacity: 0.7;
+      font-size: 10px;
+      margin-top: 4px;
+    }
+
+    .row-inline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 4px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    select, input[type="checkbox"] {
+      font-size: 11px;
+    }
+
+    .badge {
+      padding: 2px 5px;
+      border-radius: 999px;
+      font-size: 9px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    a {
+      color: #9dd6ff;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui-panel">
+    <h1>
+      QDS Solar System v2
+      <span class="tophat">🎩</span>
+    </h1>
+    <div class="small-note">
+      Clean Keplerian orbits with a tunable
+      <strong>QDS vacuum kernel</strong> that gently perturbs them.
+      Pluto included because respect.
+    </div>
+
+    <!-- QDS sliders -->
+    <div class="slider-row">
+      <label>
+        <span>Spatial correlation λ<sub>c</sub></span>
+        <span id="lambda-val">1.7</span>
+      </label>
+      <input id="lambda-slider" type="range" min="0.5" max="3.0" step="0.05" value="1.7" />
+    </div>
+
+    <div class="slider-row">
+      <label>
+        <span>Temporal correlation τ<sub>c</sub></span>
+        <span id="tau-val">1.5</span>
+      </label>
+      <input id="tau-slider" type="range" min="0.4" max="3.0" step="0.05" value="1.5" />
+    </div>
+
+    <div class="slider-row">
+      <label>
+        <span>Field amplitude A</span>
+        <span id="amp-val">0.25</span>
+      </label>
+      <input id="amp-slider" type="range" min="0.0" max="1.0" step="0.01" value="0.25" />
+    </div>
+
+    <div class="slider-row">
+      <label>
+        <span>Orbit speed (sim time)</span>
+        <span id="speed-val">1.0×</span>
+      </label>
+      <input id="speed-slider" type="range" min="0.2" max="4.0" step="0.1" value="1.0" />
+    </div>
+
+    <div class="row-inline">
+      <span>
+        <label>
+          <input type="checkbox" id="show-trails" checked />
+          Show orbit tracers
+        </label>
+      </span>
+      <span class="badge">Mode: Kepler + QDS kernel</span>
+    </div>
+
+    <div class="small-note">
+      Drag to orbit • Pinch / scroll to zoom.<br />
+      QDS kernel perturbs orbital radii & vertical displacement in real time.<br />
+      <em>Clean (A≈0) ≈ GR; higher A = correlated drift, not chaos.</em>
+    </div>
+  </div>
+
+  <canvas id="renderCanvas"></canvas>
+
+  <script>
+    // -------- Basic Babylon setup --------
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true, {
+      preserveDrawingBuffer: true,
+      stencil: true,
+    });
+
+    function createScene() {
+      const scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.06, 1.0);
+
+      const camera = new BABYLON.ArcRotateCamera(
+        "camera",
+        -Math.PI / 2.2,
+        Math.PI / 2.5,
+        140,
+        BABYLON.Vector3.Zero(),
+        scene
+      );
+      camera.lowerRadiusLimit = 40;
+      camera.upperRadiusLimit = 260;
+      camera.wheelPrecision = 40;
+      camera.panningSensibility = 0;
+      camera.attachControl(canvas, true);
+
+      const light = new BABYLON.HemisphericLight(
+        "hemi",
+        new BABYLON.Vector3(0, 1, 0),
+        scene
+      );
+      light.intensity = 0.85;
+
+      // Sun
+      const sun = BABYLON.MeshBuilder.CreateSphere(
+        "sun",
+        { diameter: 16, segments: 32 },
+        scene
+      );
+      const sunMat = new BABYLON.StandardMaterial("sunMat", scene);
+      sunMat.emissiveColor = new BABYLON.Color3(1.0, 0.9, 0.3);
+      sunMat.diffuseColor = new BABYLON.Color3(0.0, 0.0, 0.0);
+      sun.material = sunMat;
+
+      // Substrate dots (just for vibes)
+      const substrateDots = [];
+      const gridSize = 18;
+      const cell = 8;
+      const dotMat = new BABYLON.StandardMaterial("dotMat", scene);
+      dotMat.emissiveColor = new BABYLON.Color3(0.25, 0.7, 1.0);
+      dotMat.alpha = 0.8;
+
+      for (let x = -gridSize; x <= gridSize; x++) {
+        for (let z = -gridSize; z <= gridSize; z++) {
+          const dot = BABYLON.MeshBuilder.CreateSphere(
+            "dot",
+            { diameter: 0.6, segments: 8 },
+            scene
+          );
+          dot.position = new BABYLON.Vector3(x * cell, -0.5, z * cell);
+          dot.material = dotMat;
+          substrateDots.push(dot);
+        }
+      }
+
+      // Planet definitions (scaled, not to real size)
+      const planetDefs = [
+        {
+          name: "Mercury",
+          color: new BABYLON.Color3(0.8, 0.7, 0.6),
+          orbitRadius: 22,
+          size: 1.4,
+          periodYears: 0.24,
+          ecc: 0.21,
+          inclDeg: 7.0,
+        },
+        {
+          name: "Venus",
+          color: new BABYLON.Color3(0.95, 0.8, 0.5),
+          orbitRadius: 30,
+          size: 2.2,
+          periodYears: 0.62,
+          ecc: 0.007,
+          inclDeg: 3.4,
+        },
+        {
+          name: "Earth",
+          color: new BABYLON.Color3(0.2, 0.6, 1.0),
+          orbitRadius: 38,
+          size: 2.3,
+          periodYears: 1.0,
+          ecc: 0.0167,
+          inclDeg: 0.0,
+        },
+        {
+          name: "Mars",
+          color: new BABYLON.Color3(1.0, 0.4, 0.2),
+          orbitRadius: 46,
+          size: 1.9,
+          periodYears: 1.88,
+          ecc: 0.093,
+          inclDeg: 1.85,
+        },
+        {
+          name: "Jupiter",
+          color: new BABYLON.Color3(1.0, 0.85, 0.6),
+          orbitRadius: 62,
+          size: 5.0,
+          periodYears: 11.86,
+          ecc: 0.048,
+          inclDeg: 1.3,
+        },
+        {
+          name: "Saturn",
+          color: new BABYLON.Color3(0.95, 0.9, 0.7),
+          orbitRadius: 80,
+          size: 4.2,
+          periodYears: 29.4,
+          ecc: 0.056,
+          inclDeg: 2.5,
+        },
+        {
+          name: "Uranus",
+          color: new BABYLON.Color3(0.6, 0.9, 1.0),
+          orbitRadius: 98,
+          size: 3.0,
+          periodYears: 84.0,
+          ecc: 0.047,
+          inclDeg: 0.8,
+        },
+        {
+          name: "Neptune",
+          color: new BABYLON.Color3(0.4, 0.6, 1.0),
+          orbitRadius: 114,
+          size: 3.1,
+          periodYears: 164.8,
+          ecc: 0.009,
+          inclDeg: 1.8,
+        },
+        {
+          name: "Pluto",
+          color: new BABYLON.Color3(0.85, 0.85, 0.9),
+          orbitRadius: 130,
+          size: 1.2,
+          periodYears: 248.0,
+          ecc: 0.25,
+          inclDeg: 17.0,
+        },
+      ];
+
+      const planetMaterialCache = {};
+      function makePlanetMaterial(color, name) {
+        const key = name;
+        if (planetMaterialCache[key]) return planetMaterialCache[key];
+        const mat = new BABYLON.StandardMaterial(name + "-mat", scene);
+        mat.diffuseColor = color;
+        mat.specularColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+        mat.emissiveColor = color.scale(0.1);
+        planetMaterialCache[key] = mat;
+        return mat;
+      }
+
+      const planets = [];
+      const orbitLines = [];
+
+      const baseAngularSpeed = 0.35; // rad/sec for a 1-year orbit at speed=1
+
+      planetDefs.forEach((def, idx) => {
+        const mesh = BABYLON.MeshBuilder.CreateSphere(
+          def.name,
+          { diameter: def.size * 2.0, segments: 16 },
+          scene
+        );
+        mesh.material = makePlanetMaterial(def.color, def.name);
+
+        const angle0 = Math.random() * Math.PI * 2.0;
+
+        const orbitMat = new BABYLON.StandardMaterial(def.name + "-orbit-mat", scene);
+        orbitMat.emissiveColor = new BABYLON.Color3(0.15, 0.45, 0.8);
+        orbitMat.alpha = def.name === "Pluto" ? 0.6 : 0.35;
+
+        const orbitPoints = [];
+        const a = def.orbitRadius;
+        const b = a * Math.sqrt(1 - def.ecc * def.ecc);
+        const steps = 128;
+
+        for (let i = 0; i <= steps; i++) {
+          const theta = (i / steps) * Math.PI * 2;
+          const x = a * Math.cos(theta);
+          const z = b * Math.sin(theta);
+          orbitPoints.push(new BABYLON.Vector3(x, 0, z));
+        }
+
+        const orbitLine = BABYLON.MeshBuilder.CreateLines(def.name + "-orbit", {
+          points: orbitPoints,
+        }, scene);
+        orbitLine.color = orbitMat.emissiveColor;
+        orbitLine.alpha = orbitMat.alpha;
+        orbitLines.push(orbitLine);
+
+        planets.push({
+          def,
+          mesh,
+          orbitLine,
+          baseAngle: angle0,
+          angularSpeed: baseAngularSpeed / def.periodYears,
+          inclRad: (def.inclDeg * Math.PI) / 180,
+          trailPoints: [],
+          trailMesh: null,
+          trailName: def.name + "-trail",
+          phaseOffset: idx * 1.37, // for QDS kernel
+        });
+      });
+
+      // ---------- QDS kernel controls ----------
+      const lambdaSlider = document.getElementById("lambda-slider");
+      const tauSlider = document.getElementById("tau-slider");
+      const ampSlider = document.getElementById("amp-slider");
+      const speedSlider = document.getElementById("speed-slider");
+      const showTrailsCheckbox = document.getElementById("show-trails");
+
+      const lambdaVal = document.getElementById("lambda-val");
+      const tauVal = document.getElementById("tau-val");
+      const ampVal = document.getElementById("amp-val");
+      const speedVal = document.getElementById("speed-val");
+
+      let lambdaC = parseFloat(lambdaSlider.value);
+      let tauC = parseFloat(tauSlider.value);
+      let ampA = parseFloat(ampSlider.value);
+      let speedFactor = parseFloat(speedSlider.value);
+
+      lambdaSlider.addEventListener("input", () => {
+        lambdaC = parseFloat(lambdaSlider.value);
+        lambdaVal.textContent = lambdaC.toFixed(2);
+      });
+      tauSlider.addEventListener("input", () => {
+        tauC = parseFloat(tauSlider.value);
+        tauVal.textContent = tauC.toFixed(2);
+      });
+      ampSlider.addEventListener("input", () => {
+        ampA = parseFloat(ampSlider.value);
+        ampVal.textContent = ampA.toFixed(2);
+      });
+      speedSlider.addEventListener("input", () => {
+        speedFactor = parseFloat(speedSlider.value);
+        speedVal.textContent = speedFactor.toFixed(1) + "×";
+      });
+
+      // ---------- Render loop / physics-ish ----------
+      let lastTime = performance.now() * 0.001;
+
+      scene.registerBeforeRender(() => {
+        const now = performance.now() * 0.001;
+        const dt = now - lastTime;
+        lastTime = now;
+
+        const simTime = now * speedFactor;
+
+        // simple correlated kernel "noise"
+        function qdsKernel(t, phase) {
+          const slow = Math.sin((t / Math.max(tauC, 0.1)) + phase);
+          const fast = Math.sin(lambdaC * t + phase * 0.7);
+          return 0.5 * slow + 0.5 * fast;
+        }
+
+        planets.forEach((p) => {
+          const t = simTime;
+          const baseAngle = p.baseAngle + p.angularSpeed * t;
+          const k = qdsKernel(t, p.phaseOffset);
+
+          // radius perturbation (few percent at high A)
+          const radiusJitter = 1 + ampA * 0.06 * k;
+          const a = p.def.orbitRadius * radiusJitter;
+          const b = a * Math.sqrt(1 - p.def.ecc * p.def.ecc);
+
+          const x0 = a * Math.cos(baseAngle);
+          const z0 = b * Math.sin(baseAngle);
+
+          // small vertical wobble from kernel
+          const y0 = ampA * 3.0 * qdsKernel(t * 0.7, p.phaseOffset + 1.3);
+
+          // apply inclination
+          const cosI = Math.cos(p.inclRad);
+          const sinI = Math.sin(p.inclRad);
+          const yIncl = y0 * cosI + z0 * sinI;
+          const zIncl = z0 * cosI - y0 * sinI;
+
+          p.mesh.position.x = x0;
+          p.mesh.position.y = yIncl;
+          p.mesh.position.z = zIncl;
+
+          // --- orbit trails (optional) ---
+          if (showTrailsCheckbox.checked) {
+            const maxTrail = 220;
+            p.trailPoints.push(p.mesh.position.clone());
+            if (p.trailPoints.length > maxTrail) {
+              p.trailPoints.shift();
+            }
+            if (!p.trailMesh) {
+              p.trailMesh = BABYLON.MeshBuilder.CreateLines(
+                p.trailName,
+                { points: p.trailPoints, updatable: true },
+                scene
+              );
+              p.trailMesh.color = p.mesh.material.emissiveColor
+                ? p.mesh.material.emissiveColor
+                : new BABYLON.Color3(0.7, 0.7, 0.7);
+              p.trailMesh.alpha = 0.9;
+            } else {
+              BABYLON.MeshBuilder.CreateLines(
+                p.trailName,
+                { points: p.trailPoints, instance: p.trailMesh },
+                scene
+              );
+            }
+          } else {
+            if (p.trailMesh) {
+              p.trailMesh.dispose();
+              p.trailMesh = null;
+              p.trailPoints = [];
+            }
+          }
+        });
+
+        // tiny breathing motion of substrate dots for vibes
+        const dotPhase = now / Math.max(tauC * 4.0, 0.5);
+        substrateDots.forEach((d, i) => {
+          const phase = dotPhase + (i * lambdaC) * 0.01;
+          const wobble = ampA * 0.8 * Math.sin(phase);
+          d.position.y = -0.5 + wobble;
+        });
+      });
+
+      return scene;
+    }
+
+    const scene = createScene();
+
+    engine.runRenderLoop(() => {
+      scene.render();
+    });
+
+    window.addEventListener("resize", () => {
+      engine.resize();
+    });
+  </script>
+</body>
+</html>
