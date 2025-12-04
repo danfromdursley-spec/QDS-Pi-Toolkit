@@ -1,0 +1,4 @@
+cd ~/QDS-Pi-Toolkit
+./scripts/run_qds_web.sh
+
+http://127.0.0.1:8000/qds_sandbox.html
